@@ -3,22 +3,22 @@
 mc_port=25566
 port=${1:-${PORT:-8080}}
 
-if [ -z "$NGROK_API_TOKEN" ]; then
-  echo "You must set the NGROK_API_TOKEN config var to create a TCP tunnel!"
-  exit 1
-fi
+
 
 # Start the TCP tunnel
-ngrok_cmd="bin/ngrok -authtoken $NGROK_API_TOKEN -log stdout ${NGROK_OPTS} -proto=tcp ${mc_port}"
-echo "Starting ngrok..."
-eval "$ngrok_cmd > ngrok.log &"
-ngrok_pid=$!
+chisel_cmd="./chisel server --port $port --proxy http://www.google.co.jp"
+echo "Starting chisel..."
+eval "$chisel_cmd > chisel.log &"
+chisel_pid=$!
 
 # Do an inline sync first, then start the background job
-echo "Starting sync..."
-bin/sync
-eval "while true; do sleep ${AWS_SYNC_INTERVAL:-60}; bin/sync; done &"
-sync_pid=$!
+sync_pid=""
+if [ "${AWS_ACCESS_KEY}" != "" ]; then 
+  echo "Starting sync..."
+  bin/sync
+  eval "while true; do sleep ${AWS_SYNC_INTERVAL:-60}; bin/sync; done &"
+  sync_pid=$!
+fi
 
 # create server config
 echo "server-port=${mc_port}" >> /app/server.properties
@@ -27,24 +27,15 @@ touch banned-players.json
 touch banned-ips.json
 touch ops.json
 
-limit=$(ulimit -u)
-case $limit in
-  512)   # 2X Dyno
-  heap="768m"
-  ;;
-  32768) # PX Dyno
-  heap="4g"
-  ;;
-  *)     # 1X Dyno
-  heap="384m"
-  ;;
-esac
-
 echo "Starting: minecraft ${mc_port}"
-eval "java -Xmx${heap} -Xms${heap} -jar minecraft.jar nogui &"
+eval "java -jar minecraft.jar nogui &"
 main_pid=$!
 
-trap "kill $ngrok_pid $main_pid $sync_pid" SIGTERM
-trap "kill -9 $ngrok_pid $main_pid $sync_pid; exit" SIGKILL
+if [ "$sync_pid!" != "" ]; then
+  trap "kill $chisel_pid $main_pid $sync_pid" SIGTERM
+  trap "kill -9 $chisel_pid $main_pid $sync_pid; exit" SIGKILL
+else
+  trap "kill $chisel_pid $main_pid" SIGTERM
+  trap "kill -9 $chisel_pid $main_pid; exit" SIGKILL
+fi
 
-eval "ruby -rwebrick -e'WEBrick::HTTPServer.new(:BindAddress => \"0.0.0.0\", :Port => ${port}, :MimeTypes => {\"rhtml\" => \"text/html\"}, :DocumentRoot => Dir.pwd).start'"
